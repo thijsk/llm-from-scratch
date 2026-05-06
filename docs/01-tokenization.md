@@ -2,35 +2,34 @@
 
 LLMs don't see text — they see sequences of integers. A tokenizer converts between the two.
 
-No file to create here — the tokenizer is built directly into `train.py` (Part 3). This part explains how it works so you understand what you're writing later.
+The tokenizer lives in `CharacterTokenizer.cs`. It builds the vocabulary and handles encode/decode. `TextDataset.cs` then reads the dataset, encodes it once, and creates train/validation batches. This part explains how it works so you understand what you're implementing.
 
 ## Character-Level Tokenization
 
 We use the simplest possible tokenizer: each unique character gets an ID.
 
-```python
-text = open("../data/shakespeare.txt").read()
-chars = sorted(set(text))
-vocab_size = len(chars)  # 65 for Shakespeare
+```csharp
+var text = File.ReadAllText("data/shakespeare.txt");
+var chars = text.Distinct().OrderBy(c => c).ToList();
+var vocabSize = chars.Count;  // 65 for Shakespeare
 
-stoi = {c: i for i, c in enumerate(chars)}  # string to int
-itos = {i: c for c, i in stoi.items()}      # int to string
+var stoi = chars.Select((c, i) => (c, (long)i))
+    .ToDictionary(x => x.c, x => x.Item2);  // char to int
+var itos = chars.Select((c, i) => (c, (long)i))
+    .ToDictionary(x => x.Item2, x => x.c);  // int to char
 
-def encode(s):
-    return [stoi[c] for c in s]
-
-def decode(ids):
-    return "".join([itos[i] for i in ids])
+long[] encode(string s) => s.Select(c => stoi[c]).ToArray();
+string decode(long[] ids) => new string(ids.Select(i => itos[i]).ToArray());
 ```
 
-```python
-encode("Hello")  # [20, 43, 50, 50, 53]
-decode([20, 43, 50, 50, 53])  # "Hello"
+```csharp
+encode("Hello");  // [20L, 43L, 50L, 50L, 53L]
+decode(new[] { 20L, 43L, 50L, 50L, 53L });  // "Hello"
 ```
 
 That's it. No libraries, no pretrained models. Shakespeare uses 65 unique characters (letters, digits, punctuation, newlines). Each character becomes one token.
 
-This tokenizer is built directly into our data loading — there's no separate tokenizer file to write.
+This tokenizer is built directly into our data loading — `CharacterTokenizer.FromText()` does exactly this.
 
 ## Why Character-Level?
 
@@ -65,9 +64,9 @@ But for this workshop on Shakespeare, character-level is the right choice.
 
 The vocabulary size directly determines two things in the model architecture:
 
-1. **The embedding table** — `nn.Embedding(vocab_size, n_embd)` maps each token ID to a learned vector. With vocab_size=65, this is tiny (65 × 384 = 24,960 parameters). With GPT-2's vocab of 50,257, it's 50,257 × 384 = 19.3M parameters — nearly half the model.
+1. **The embedding table** — `Embedding(vocab_size, n_embd)` maps each token ID to a learned vector. With vocab_size=65, this is tiny (65 × 384 = 24,960 parameters). With GPT-2's vocab of 50,257, it's 50,257 × 384 = 19.3M parameters — nearly half the model.
 
-2. **The output layer** — `nn.Linear(n_embd, vocab_size)` produces a probability over all possible next tokens. With 65 tokens, the model chooses from 65 options. With 50,257 tokens, it must spread its predictions across 50,257 classes.
+2. **The output layer** — `Linear(n_embd, vocab_size)` produces a probability over all possible next tokens. With 65 tokens, the model chooses from 65 options. With 50,257 tokens, it must spread its predictions across 50,257 classes.
 
 ## Key Takeaways
 

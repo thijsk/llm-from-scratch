@@ -22,7 +22,12 @@ Use the `--seed` flag to make your generation reproducible. The same seed + same
 
 ```bash
 # example submission command
-python generate.py checkpoint_best.pt --prompt "The morning sun" --temperature 0.7 --top_k 30 --seed 42
+dotnet run --project src/LlmFromScratch -- generate \
+  --checkpoint artifacts-best/checkpoints/final \
+  --prompt "The morning sun" \
+  --temperature 0.7 \
+  --top-k 30 \
+  --seed 42
 ```
 
 We will verify your submission by running this exact command against your checkpoint.
@@ -44,7 +49,7 @@ You learned the fundamentals — now push them. Here are levers to pull:
 
 ### Better Data
 
-Shakespeare worked, but it's just one style. Find or build a better poetry dataset:
+The training command accepts a custom `--data` path, so you can find or build a better poetry dataset without changing the project structure:
 
 - **Poetry Foundation** — thousands of poems across styles and eras
 - **Project Gutenberg** — public domain poetry collections
@@ -65,18 +70,18 @@ With more data, you can justify a larger model without overfitting immediately:
 
 Remember the overfitting lesson: a bigger model on the same data just memorizes faster. Scale the model with the data.
 
-### Better Tokenizer
+### Different Tokenizer
 
 Character-level worked for Shakespeare because the dataset was small. With a larger poetry dataset, consider:
 
-- **BPE with tiktoken** — GPT-2's tokenizer, good for datasets over ~5MB
+- **BPE** — groups common character sequences into single tokens
 - **Train your own BPE** — smaller vocab (1k-5k tokens) tuned to poetry vocabulary
 - **Word-level** — if your dataset is large enough and you want the model to think in words
 
 ### Training Tweaks
 
-- **Longer context** (`block_size=512` or `1024`) — lets the model capture full stanzas and rhyme schemes across lines
-- **Dropout** — add `nn.Dropout(0.1)` in the attention and MLP blocks to reduce overfitting
+- **Longer context** (`--block-size 512` or `1024`) — lets the model capture full stanzas and rhyme schemes across lines
+- **Dropout** — add `Dropout(0.1)` in the attention and MLP blocks to reduce overfitting
 - **Early stopping** — save the checkpoint with the lowest val loss, not the last one
 - **Learning rate** — tune `max_lr` for your specific model/data combo
 
@@ -93,6 +98,6 @@ The same model can produce very different output depending on generation setting
 
 - Model must be trained from scratch using the code from this workshop (or your modifications of it)
 - No pretrained models, no fine-tuning, no loading weights from anywhere
-- No manual editing of the output except of trimming — what the model generates is what you submit
+- No manual editing of the output except trimming — what the model generates is what you submit
 - You can modify any part of the code: model architecture, training loop, tokenizer, generation
-- Training must run on your own machine or Google Colab (no paid cloud GPUs)
+- Training must run on your own machine (no paid cloud GPUs required, but you can use them)

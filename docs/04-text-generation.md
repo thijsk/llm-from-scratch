@@ -2,21 +2,14 @@
 
 Your model is trained. Now let's make it write. Text generation with a GPT is **autoregressive**: generate one token at a time, append it to the input, and repeat.
 
-Create a new file called `generate.py` in your scratchpad. Once you've written it, go back to `train.py` and add `from generate import generate` at the top — this enables the sample generation during training that you skipped in Part 3.
+Generation is handled by `TextGenerator.Generate()` in `Training.cs` and exposed through the `generate` CLI command.
 
 ## The Naive Approach: Greedy Decoding
 
 Always pick the most probable next token.
 
-```python
-def generate_greedy(model, idx, max_new_tokens):
-    for _ in range(max_new_tokens):
-        idx_cond = idx[:, -model.config.block_size:]
-        logits, _ = model(idx_cond)
-        logits = logits[:, -1, :]
-        next_token = logits.argmax(dim=-1, keepdim=True)
-        idx = torch.cat([idx, next_token], dim=1)
-    return idx
+```csharp
+Tensor nextToken = logits.argmax(dim: -1, keepdim: true);
 ```
 
 This is deterministic — the same prompt always produces the same output. It tends to be repetitive and boring because the highest-probability continuation reinforces itself.
@@ -25,8 +18,8 @@ This is deterministic — the same prompt always produces the same output. It te
 
 Scale the logits before applying softmax. Higher temperature = more random, lower = more deterministic.
 
-```python
-logits = logits / temperature
+```csharp
+logits = logits / temperature;
 ```
 
 The math: softmax computes `exp(logit_i) / sum(exp(logit_j))`. Dividing all logits by temperature changes the distribution:
@@ -39,38 +32,56 @@ The math: softmax computes `exp(logit_i) / sum(exp(logit_j))`. Dividing all logi
 
 Only consider the k most probable tokens. Set everything else to `-inf`.
 
-```python
-if top_k > 0:
-    values, _ = torch.topk(logits, top_k)
-    logits[logits < values[:, -1:]] = float("-inf")
+```csharp
+(values, _) = torch.topk(logits, topK, dim: -1);
+threshold = values.select(1, topK - 1).unsqueeze(1);
+logits = logits.masked_fill(logits < threshold, double.NegativeInfinity);
 ```
 
 This prevents the model from sampling extremely unlikely tokens. With a character-level model (vocab=65), `top_k=40` is reasonable — it still considers most characters but excludes the very unlikely ones.
 
 ## The Full Generate Function
 
-```python
-@torch.no_grad()
-def generate(model, prompt, stoi, itos, max_new_tokens=200, temperature=0.8, top_k=40):
-    device = next(model.parameters()).device
-    tokens = [stoi[c] for c in prompt if c in stoi]
-    idx = torch.tensor([tokens], dtype=torch.long, device=device)
+```csharp
+public static string Generate(
+    Gpt model, 
+    string prompt, 
+    CharacterTokenizer tokenizer,
+    int maxNewTokens = 200,
+    double temperature = 0.8,
+    int topK = 40,
+    int? seed = null)
+{
+    if (seed.HasValue)
+        torch.manual_seed(seed.Value);
 
-    model.eval()
-    for _ in range(max_new_tokens):
-        idx_cond = idx[:, -model.config.block_size:]
-        logits, _ = model(idx_cond)
-        logits = logits[:, -1, :] / temperature
+    var device = model.weights.device;
+    var tokens = prompt.Select(c => tokenizer.Encode(c.ToString())[0]).ToArray();
+    var idx = torch.tensor(new long[][] { tokens }, dtype: ScalarType.Int64, device: device);
 
-        if top_k > 0:
-            values, _ = torch.topk(logits, top_k)
-            logits[logits < values[:, -1:]] = float("-inf")
+    model.eval();
+    for (int i = 0; i < maxNewTokens; i++)
+    {
+        var idxCond = idx.narrow(1, Math.Max(0, idx.shape[1] - model.Config.BlockSize), 
+                                    Math.Min(idx.shape[1], model.Config.BlockSize));
+        var logits = model.call(idxCond);
+        var nextLogits = logits.select(1, logits.shape[1] - 1) / temperature;
 
-        probs = torch.softmax(logits, dim=-1)
-        next_token = torch.multinomial(probs, num_samples=1)
-        idx = torch.cat([idx, next_token], dim=1)
+        if (topK > 0)
+        {
+            (var values, _) = torch.topk(nextLogits, topK, dim: -1);
+            var threshold = values.select(1, topK - 1).unsqueeze(1);
+            nextLogits = nextLogits.masked_fill(nextLogits < threshold, double.NegativeInfinity);
+        }
 
-    return "".join([itos[i] for i in idx[0].tolist()])
+        var probs = torch.softmax(nextLogits, dim: -1);
+        var nextToken = torch.multinomial(probs, 1);
+        idx = torch.cat(new[] { idx, nextToken }, dim: 1);
+    }
+
+    var ids = idx[0].to(torch.CPU).to(ScalarType.Int64).data<long>().ToArray();
+    return tokenizer.Decode(ids);
+}
 ```
 
 The pipeline for each token:
@@ -81,79 +92,36 @@ The pipeline for each token:
 5. Sample from the distribution with `multinomial`
 6. Append the sampled token and repeat
 
-`@torch.no_grad()` disables gradient computation — we don't need it for inference and it saves memory.
+`model.eval()` disables dropout and batch norm — we don't need training-mode behavior for inference and it saves computation.
 
 The function takes `stoi`/`itos` mappings from the training data — these define how characters map to token IDs and back.
-
-### Command-Line Interface
-
-Add this to the bottom of `generate.py` so you can run it from the terminal:
-
-```python
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Generate text from a trained GPT checkpoint")
-    parser.add_argument("checkpoint", help="Path to checkpoint file (e.g. checkpoint_final.pt)")
-    parser.add_argument("--prompt", default="To be or not", help="Starting text for generation")
-    parser.add_argument("--max_new_tokens", type=int, default=200, help="Number of tokens to generate")
-    parser.add_argument("--temperature", type=float, default=0.8, help="Sampling temperature (lower = more deterministic)")
-    parser.add_argument("--top_k", type=int, default=40, help="Only sample from top-k most likely tokens")
-    parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
-    args = parser.parse_args()
-
-    if args.seed is not None:
-        torch.manual_seed(args.seed)
-
-    checkpoint = torch.load(args.checkpoint, weights_only=False)
-    config = checkpoint["config"]
-    stoi = checkpoint["stoi"]
-    itos = checkpoint["itos"]
-
-    model = GPT(config)
-    model.load_state_dict(checkpoint["model_state_dict"])
-
-    output = generate(model, args.prompt, stoi, itos,
-                      max_new_tokens=args.max_new_tokens,
-                      temperature=args.temperature,
-                      top_k=args.top_k)
-    print(output)
-```
 
 ## Reproducibility with Seeds
 
 Generation involves random sampling (`torch.multinomial`), so the same prompt produces different output each time. To get reproducible results, set a seed before generating:
 
-```python
-torch.manual_seed(42)
-print(generate(model, "To be or not", stoi, itos, temperature=0.8))
-# same output every time with seed=42
+```bash
+dotnet run --project src/LlmFromScratch -- generate \
+  --checkpoint artifacts/checkpoints/final \
+  --prompt "To be or not" \
+  --seed 42
 ```
 
-From the command line:
-```bash
-python generate.py checkpoint_final.pt --prompt "To be or not" --seed 42
-```
+Same seed + same checkpoint + same arguments will always produce the same output.
 
 ## Try Different Settings
 
-```python
-checkpoint = torch.load("checkpoint_final.pt", weights_only=False)
-config = checkpoint["config"]
-stoi = checkpoint["stoi"]
-itos = checkpoint["itos"]
+```csharp
+checkpoint = ...  // load checkpoint
 
-model = GPT(config)
-model.load_state_dict(checkpoint["model_state_dict"])
+// deterministic, repetitive
+generate(model, "To be or not to be", tokenizer, temperature: 0.1);
 
-# deterministic, repetitive
-print(generate(model, "To be or not to be", stoi, itos, temperature=0.1))
+// balanced
+generate(model, "To be or not to be", tokenizer, temperature: 0.8);
 
-# balanced
-print(generate(model, "To be or not to be", stoi, itos, temperature=0.8))
-
-# creative, potentially incoherent
-print(generate(model, "To be or not to be", stoi, itos, temperature=1.5))
+// creative, potentially incoherent
+generate(model, "To be or not to be", tokenizer, temperature: 1.5);
 ```
 
 ## What to Expect
@@ -181,7 +149,7 @@ That everlature by Romeo: what news,
 Which you had knock'd my part to speak
 ```
 
-Note: the best output is around step 1500-2500. After that, the model overfits and starts regurgitating memorized training data (see Part 3 for details).
+Note: the best output is around step 1500-2500. After that, the model overfits and starts regurgitating memorized training data.
 
 ## Key Takeaways
 
@@ -190,5 +158,25 @@ Note: the best output is around step 1500-2500. After that, the model overfits a
 - Temperature controls randomness (0.7-0.9 is usually good)
 - Top-k removes extremely unlikely tokens
 - With character-level models, generate samples during training to watch the model learn
+
+## Command-Line Interface
+
+Generate from a trained checkpoint directory:
+
+```bash
+dotnet run --project src/LlmFromScratch -- generate --checkpoint artifacts/checkpoints/final --prompt "To be or not"
+```
+
+With explicit sampling controls:
+
+```bash
+dotnet run --project src/LlmFromScratch -- generate \
+  --checkpoint artifacts/checkpoints/final \
+  --prompt "To be or not" \
+  --max-new-tokens 200 \
+  --temperature 0.8 \
+  --top-k 40 \
+  --seed 42
+```
 
 ## Next: [Part 5 — Putting It All Together →](05-putting-it-together.md)
