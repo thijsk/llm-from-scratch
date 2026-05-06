@@ -52,6 +52,9 @@ internal static class Program
 			Seed = CommandLine.GetInt(options, "seed", 42),
 			SampleTemperature = CommandLine.GetDouble(options, "temperature", 0.8),
 			SampleTopK = CommandLine.GetInt(options, "top-k", 40),
+			AsciiOnly = CommandLine.GetBool(options, "ascii-only", false),
+			NumThreads = CommandLine.GetInt(options, "num-threads", 0),
+			GradAccumSteps = CommandLine.GetInt(options, "grad-accum-steps", 1),
 			Config = new GptConfig
 			{
 				BlockSize = CommandLine.GetInt(options, "block-size", 256),
@@ -122,8 +125,13 @@ internal static class Program
 		Console.WriteLine("  generate  Generate text from a saved checkpoint directory.");
 		Console.WriteLine("  analyze   Summarize loss_log.json and export CSV/summary JSON.");
 		Console.WriteLine();
+		Console.WriteLine("Train options:");
+		Console.WriteLine("  --ascii-only true|false  Remove non-ASCII characters before tokenization (default: false)");
+		Console.WriteLine("  --num-threads N          Number of CPU threads for LibTorch (0 = let LibTorch decide, default: 0)");
+		Console.WriteLine();
 		Console.WriteLine("Examples:");
 		Console.WriteLine("  dotnet run -- train --output-dir artifacts");
+		Console.WriteLine("  dotnet run -- train --output-dir artifacts-eng --data data/english.txt --ascii-only true");
 		Console.WriteLine("  dotnet run -- generate --checkpoint artifacts/checkpoints/final --prompt \"To be or not\"");
 		Console.WriteLine("  dotnet run -- analyze --loss-log artifacts/loss_log.json");
 	}
@@ -203,4 +211,29 @@ internal static class CommandLine
 		=> options.TryGetValue(key, out var value)
 			? double.Parse(value, CultureInfo.InvariantCulture)
 			: defaultValue;
+
+	public static bool GetBool(Dictionary<string, string> options, string key, bool defaultValue)
+	{
+		if (!options.TryGetValue(key, out var value))
+		{
+			return defaultValue;
+		}
+
+		if (bool.TryParse(value, out var parsed))
+		{
+			return parsed;
+		}
+
+		if (value == "1")
+		{
+			return true;
+		}
+
+		if (value == "0")
+		{
+			return false;
+		}
+
+		throw new ArgumentException($"Option '--{key}' must be a boolean (true/false). Received '{value}'.");
+	}
 }

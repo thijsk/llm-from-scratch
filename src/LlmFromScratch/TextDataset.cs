@@ -21,13 +21,29 @@ public sealed class TextDataset
 
     public int Length => _tokens.Length;
 
-    public static TextDataset Load(string path, int seed)
+    public static TextDataset Load(string path, int seed, bool asciiOnly)
     {
         var text = File.ReadAllText(path);
+
+        if (asciiOnly)
+        {
+            text = new string(text.Where(IsAllowedAscii).ToArray());
+            if (text.Length == 0)
+            {
+                throw new InvalidOperationException("ASCII filtering removed all characters from the dataset.");
+            }
+        }
+
         var tokenizer = CharacterTokenizer.FromText(text);
         var tokens = tokenizer.Encode(text);
         return new TextDataset(tokens, tokenizer, seed);
     }
+
+    private static bool IsAllowedAscii(char character)
+        => character == '\n'
+            || character == '\r'
+            || character == '\t'
+            || (character >= ' ' && character <= '~');
 
     public (Tensor X, Tensor Y) GetTrainBatch(int blockSize, int batchSize, Device device)
         => GetBatch(0, _trainLength, blockSize, batchSize, device);

@@ -12,13 +12,22 @@ public static class Trainer
         torch.random.manual_seed(options.Seed);
         Directory.CreateDirectory(options.OutputDir);
 
-        var device = DeviceSelector.GetDevice();
-        Console.WriteLine($"Using device: {device.type}");
+        if (options.NumThreads > 0)
+        {
+            torch.set_num_threads(options.NumThreads);
+        }
 
-        var dataset = TextDataset.Load(options.DataPath, options.Seed);
+        var device = DeviceSelector.GetDevice();
+        Console.WriteLine($"Using device: {device.type}, threads: {torch.get_num_threads()}");
+
+        var dataset = TextDataset.Load(options.DataPath, options.Seed, options.AsciiOnly);
         options.Config.VocabSize = dataset.Tokenizer.VocabSize;
 
         Console.WriteLine($"Dataset: {dataset.Length:N0} chars, vocab size: {dataset.Tokenizer.VocabSize}");
+        if (options.AsciiOnly)
+        {
+            Console.WriteLine("Preprocessing: ASCII-only (non-ASCII chars removed)");
+        }
 
         using var model = new Gpt(options.Config);
         model.to(device);
@@ -31,6 +40,10 @@ public static class Trainer
 
         var log = new LossLog();
         double latestValidationLoss = double.NaN;
+        var tokensPerStep = options.BatchSize * options.Config.BlockSize * options.GradAccumSteps;
+        var overallTimer = System.Diagnostics.Stopwatch.StartNew();
+        var windowTimer = System.Diagnostics.Stopwatch.StartNew();
+        var windowSteps = 0;
 
         for (var step = 0; step < options.MaxSteps; step++)
         {
@@ -46,16 +59,26 @@ public static class Trainer
                 group.LearningRate = learningRate;
             }
 
-            using var batch = BatchScope.Create(dataset.GetTrainBatch(options.Config.BlockSize, options.BatchSize, device));
-            using var logits = model.call(batch.X);
-            using var loss = lossFn.call(logits.view(-1, options.Config.VocabSize), batch.Y.view(-1));
-
             optimizer.zero_grad();
-            loss.backward();
+            double trainLoss = 0;
+            for (var accumStep = 0; accumStep < options.GradAccumSteps; accumStep++)
+            {
+                using (torch.NewDisposeScope())
+                {
+                    using var batch = BatchScope.Create(dataset.GetTrainBatch(options.Config.BlockSize, options.BatchSize, device));
+                    using var logits = model.call(batch.X);
+                    using var loss = lossFn.call(logits.view(-1, options.Config.VocabSize), batch.Y.view(-1));
+                    using var scaledLoss = loss / options.GradAccumSteps;
+
+                    scaledLoss.backward();
+                    trainLoss += loss.to(torch.CPU).item<float>() / options.GradAccumSteps;
+                }
+            }
+
             torch.nn.utils.clip_grad_norm_(model.parameters().ToArray(), 1.0);
             optimizer.step();
 
-            var trainLoss = loss.to(torch.CPU).item<float>();
+            windowSteps++;
             log.Steps.Add(step);
             log.Train.Add(trainLoss);
             if (step % options.ValidationEvery == 0)
@@ -65,7 +88,19 @@ public static class Trainer
 
             if (step % 50 == 0)
             {
-                Console.WriteLine($"Step {step,5} | train loss: {trainLoss:F4} | lr: {learningRate:E2}");
+                var windowSecs = windowTimer.Elapsed.TotalSeconds;
+                var tokensPerSec = windowSecs > 0 ? (long)(windowSteps * tokensPerStep / windowSecs) : 0;
+                var stepsRemaining = options.MaxSteps - step - 1;
+                var avgStepSecs = overallTimer.Elapsed.TotalSeconds / (step + 1);
+                var eta = TimeSpan.FromSeconds(stepsRemaining * avgStepSecs);
+                var etaStr = eta.TotalHours >= 1
+                    ? $"{(int)eta.TotalHours}h{eta.Minutes:D2}m"
+                    : eta.TotalMinutes >= 1
+                        ? $"{(int)eta.TotalMinutes}m{eta.Seconds:D2}s"
+                        : $"{eta.Seconds}s";
+                Console.WriteLine($"Step {step,5} | train loss: {trainLoss:F4} | lr: {learningRate:E2} | {tokensPerSec:N0} tok/s | ETA: {etaStr}");
+                windowTimer.Restart();
+                windowSteps = 0;
             }
 
             if (step > 0 && step % options.SampleEvery == 0)
@@ -83,6 +118,11 @@ public static class Trainer
                 var checkpointDir = Path.Combine(options.OutputDir, "checkpoints", $"step_{step:D5}");
                 CheckpointIO.Save(checkpointDir, step, model, options.Config, dataset.Tokenizer);
             }
+
+            if (step % 50 == 0)
+            {
+                GC.Collect();
+            }
         }
 
         var finalDir = Path.Combine(options.OutputDir, "checkpoints", "final");
@@ -98,6 +138,7 @@ public static class Trainer
         var losses = new List<double>();
 
         using (torch.no_grad())
+        using (torch.NewDisposeScope())
         {
             for (var index = 0; index < 20; index++)
             {

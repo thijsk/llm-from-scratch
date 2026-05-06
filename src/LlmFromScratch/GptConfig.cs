@@ -26,6 +26,9 @@ public sealed class TrainOptions
     public int Seed { get; init; }
     public double SampleTemperature { get; init; }
     public int SampleTopK { get; init; }
+    public bool AsciiOnly { get; init; }
+    public int NumThreads { get; init; }
+    public int GradAccumSteps { get; init; }
 }
 
 public sealed class CheckpointMetadata
@@ -40,4 +43,5 @@ public sealed class LossLog
     public List<int> Steps { get; set; } = new();
     public List<double> Train { get; set; } = new();
     public List<double> Val { get; set; } = new();
+    public int GradAccumSteps { get; init; }
 }
